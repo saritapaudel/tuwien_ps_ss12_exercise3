@@ -1,31 +1,49 @@
 import System.IO
 import Control.Monad.State
+import Data.List
 
 type Student = String
 
 type DB = [Student]
 
-addStudent :: Student -> DB -> ((),DB)
-addStudent s db = ((),s:db)
+addStudent :: Monad m => Student -> StateT DB m ()
+addStudent s = do
+    db <- get
+    let db' = s:db
+    put db'
 
-printStudents :: DB -> IO ()
-printStudents = mapM_ putStrLn
+removeStudent :: Monad m => Student -> StateT DB m ()
+removeStudent s = do
+    db <- get
+    let db' = delete s db
+    put db'
+
+getStudents :: Monad m => StateT DB m [Student]
+getStudents = do
+    db <- get
+    return db
 
 main = do
-    let db = []
-    loop db
-    
-loop :: DB -> IO ()
-loop db = do
-    putStr "> "
-    hFlush stdout
-    cmd <- getLine
+    let db = ["fritz"]
+    execStateT loop db
+    return ()
+
+loop :: StateT DB IO ()
+loop = do
+    db <- get
+    liftIO $ putStr "> "
+    liftIO $ hFlush stdout
+    cmd <- liftIO getLine
     case cmd of
         "quit" -> return ()
         "show students" -> do
-            printStudents db
-            loop db
+            ss <- getStudents
+            liftIO $ mapM_ putStrLn ss
+            loop
         "add student" -> do
-            let (_,db2) = addStudent "fritz" db
-            loop db2
-        otherwise -> loop db
+            addStudent "fritz"
+            loop
+        "remove student" -> do
+            removeStudent "fritz"
+            loop
+        otherwise -> loop
