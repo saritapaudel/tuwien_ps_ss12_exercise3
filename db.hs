@@ -1,14 +1,31 @@
+import System.IO
+import Control.Monad.State
+
 type Student = String
 
-data DB = DB { students :: [Student] }
+type DB = [Student]
 
-addStudent :: Student -> DB -> DB
-addStudent s db = DB { students = s:(students db) }
+addStudent :: Student -> DB -> ((),DB)
+addStudent s db = ((),s:db)
 
-load :: DB
-load = DB ["Hans","Peter","Fritz"]
+printStudents :: DB -> IO ()
+printStudents = mapM_ putStrLn
 
 main = do
-    let db = load
-    let db2 = addStudent "Maria" db
-    mapM_ putStrLn $ students db2
+    let db = []
+    loop db
+    
+loop :: DB -> IO ()
+loop db = do
+    putStr "> "
+    hFlush stdout
+    cmd <- getLine
+    case cmd of
+        "quit" -> return ()
+        "show students" -> do
+            printStudents db
+            loop db
+        "add student" -> do
+            let (_,db2) = addStudent "fritz" db
+            loop db2
+        otherwise -> loop db
