@@ -1,4 +1,5 @@
 import System.IO
+import System.Exit
 import Control.Monad.State
 import Data.List
 import Data.Char
@@ -26,34 +27,35 @@ getStudents = do
 
 main = do
     let db = ["fritz"]
-    execStateT loop db
-    return ()
+    forever $ execStateT loop db
 
 loop :: StateT DB IO ()
 loop = do
     db <- get
     liftIO $ putStr "> "
     liftIO $ hFlush stdout
-    cmd <- liftIO getLine
-    case splitWords 2 cmd of
-        ("quit":_) -> return ()
-        ("show":"students":_) -> do
-            ss <- getStudents
-            liftIO $ mapM_ putStrLn ss
-            loop
-        ("add":"student":arg:_) -> do
-            addStudent $ read arg
-            loop
-        ("remove":"student":arg:_) -> do
-            removeStudent $ read arg
-            loop
-        otherwise -> loop
+    line <- liftIO getLine
+    let (cmd,args) = break isSpace line
+    case cmd of
+        "quit" -> do
+            liftIO exitSuccess
+        "showStudents" -> do
+            s <- getStudents
+            liftIO $ mapM_ putStrLn s
+        "addStudent" -> do
+            case readMaybe args of
+                Just s -> addStudent s
+                Nothing -> liftIO $ putStrLn "invalid input"
+        "removeStudent" -> do
+            removeStudent $ read args
+        "test" -> do
+            return ()
+        otherwise -> return ()
 
-splitWords :: Int -> String -> [String]
-splitWords 0 s = [s]
-splitWords n s = w : splitWords (n-1) ws
-    where (w,ws) = (break isSpace . dropWhile isSpace) s
+test :: Monad m => String -> String -> (Int,Int) -> StateT DB m ()
+test a b (c,d) = return ()
 
-
-
-
+readMaybe :: (Read a) => String -> Maybe a
+readMaybe s = case reads s of
+              [(x, "")] -> Just x
+              _ -> Nothing
