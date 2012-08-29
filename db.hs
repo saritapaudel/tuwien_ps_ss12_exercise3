@@ -1,6 +1,7 @@
 import System.IO
 import Control.Monad.State
 import Data.List
+import Data.Char
 
 type Student = String
 
@@ -34,16 +35,25 @@ loop = do
     liftIO $ putStr "> "
     liftIO $ hFlush stdout
     cmd <- liftIO getLine
-    case cmd of
-        "quit" -> return ()
-        "show students" -> do
+    case splitWords 2 cmd of
+        ("quit":_) -> return ()
+        ("show":"students":_) -> do
             ss <- getStudents
             liftIO $ mapM_ putStrLn ss
             loop
-        "add student" -> do
-            addStudent "fritz"
+        ("add":"student":arg:_) -> do
+            addStudent $ read arg
             loop
-        "remove student" -> do
-            removeStudent "fritz"
+        ("remove":"student":arg:_) -> do
+            removeStudent $ read arg
             loop
         otherwise -> loop
+
+splitWords :: Int -> String -> [String]
+splitWords 0 s = [s]
+splitWords n s = w : splitWords (n-1) ws
+    where (w,ws) = (break isSpace . dropWhile isSpace) s
+
+
+
+
