@@ -1,61 +1,42 @@
-import System.IO
-import System.Exit
-import Control.Monad.State
 import Data.List
-import Data.Char
+import Data.Time
 
+
+
+type DB = [Course]
+data Course = C CourseName [Registration] deriving (Show)
+type CourseName = String
+data Registration = R RegName Timespan [Constraint] [Student] deriving (Show)
+type RegName = String
+type Timespan = (Int,Int) --(UTCTime,UTCTime)
+data Constraint = RequiredAny [RegName] | Disallowed RegName deriving (Show)
 type Student = String
 
-type DB = [Student]
+testDB :: DB
+testDB = [C "FFP" [R "Kursanmeldung" (0,0) [] []]]
 
-addStudent :: Monad m => Student -> StateT DB m ()
-addStudent s = do
-    db <- get
-    let db' = s:db
-    put db'
 
-removeStudent :: Monad m => Student -> StateT DB m ()
-removeStudent s = do
-    db <- get
-    let db' = delete s db
-    put db'
+addRegistration :: RegName -> Timespan -> CourseName -> DB -> DB
+addRegistration rname tspan cname cs = 
+    case find (\(C name _) -> name == cname) cs of
+        Nothing -> cs
+        Just (C name regs) -> cs'
+            where cs' = updateCourse c' cs
+                  c'  = C name (reg:regs)
+                  reg = R rname tspan [] []
 
-getStudents :: Monad m => StateT DB m [Student]
-getStudents = do
-    db <- get
-    return db
+removeRegistration :: RegName -> CourseName -> DB -> DB
+removeRegistration rname cname cs =
+    case find (\(C name _) -> name == cname) cs of
+        Nothing -> cs
+        Just (C name regs) -> cs'
+            where cs'   = updateCourse c' cs
+                  c'    = C name regs'
+                  regs' = removeReg rname regs
+                  removeReg n1 rs
 
-main = do
-    let db = ["fritz"]
-    forever $ execStateT loop db
-
-loop :: StateT DB IO ()
-loop = do
-    db <- get
-    liftIO $ putStr "> "
-    liftIO $ hFlush stdout
-    line <- liftIO getLine
-    let (cmd,args) = break isSpace line
-    case cmd of
-        "quit" -> do
-            liftIO exitSuccess
-        "showStudents" -> do
-            s <- getStudents
-            liftIO $ mapM_ putStrLn s
-        "addStudent" -> do
-            case readMaybe args of
-                Just s -> addStudent s
-                Nothing -> liftIO $ putStrLn "invalid input"
-        "removeStudent" -> do
-            removeStudent $ read args
-        "test" -> do
-            return ()
-        otherwise -> return ()
-
-test :: Monad m => String -> String -> (Int,Int) -> StateT DB m ()
-test a b (c,d) = return ()
-
-readMaybe :: (Read a) => String -> Maybe a
-readMaybe s = case reads s of
-              [(x, "")] -> Just x
-              _ -> Nothing
+updateCourse :: Course -> [Course] -> [Course]
+updateCourse _ [] = []
+updateCourse (C name' regs') ((C name regs):cs)
+    | name' == name = (C name regs') : cs
+    | otherwise     = (C name regs) : updateCourse (C name' regs') cs
