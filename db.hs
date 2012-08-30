@@ -16,30 +16,42 @@ data RegData = RegData { timespan :: Timespan
 type CourseName = String
 type RegName = String
 type Timespan = (Int,Int) -- (UTCTime,UTCTime)
-data Constraint = RequireOneOf [RegName] | Forbid RegName deriving (Show)
+data Constraint = RequireOneOf [RegName] | Forbid RegName deriving (Read,Show)
 type Student = String
 
 testdb :: Courses
 testdb = Map.fromList [("FFP", Map.fromList [("Kursanmeldung", RegData (0,0) [] ["hans", "peter"]),("Abgabegespräch", RegData (0,0) [] ["fritz", "peter"])]),("FP",Map.fromList [("Kursanmeldung", RegData (0,0) [] ["hans", "franz"])])]
 
-addCourse :: Monad m => CourseName -> StateT Courses m ()
-addCourse = modify . flip Map.insert Map.empty
+-- courses
 
-removeCourse :: Monad m => CourseName -> StateT Courses m ()
-removeCourse = modify . Map.delete
+courseNames :: Courses -> [CourseName]
+courseNames = Map.keys
 
-addRegistration :: Monad m => RegName -> Timespan -> CourseName -> StateT Courses m ()
-addRegistration rname tspan cname = 
-    modify $ Map.adjust (Map.insert rname (RegData tspan [] [])) cname
+addCourse :: CourseName -> Courses -> Courses
+addCourse = flip Map.insert Map.empty
 
-removeRegistration :: Monad m => RegName -> CourseName -> StateT Courses m ()
-removeRegistration rname cname = 
-    modify $ Map.adjust (Map.delete rname) cname
+removeCourse :: CourseName -> Courses -> Courses
+removeCourse = Map.delete
+
+-- registrations
+
+regNames :: CourseName -> Courses -> [RegName]
+regNames cname = Map.keys . fromMaybe Map.empty . Map.lookup cname
+
+addReg :: RegName -> Timespan -> CourseName -> Courses -> Courses
+addReg rname tspan = Map.adjust (Map.insert rname (RegData tspan [] []))
+
+removeReg :: RegName -> CourseName -> Courses -> Courses
+removeReg rname = Map.adjust (Map.delete rname)
+
+-- constraints
 
 addConstraint :: Constraint -> RegName -> CourseName -> Courses -> Courses
-addConstraint con rname cname =
-    Map.adjust (Map.adjust addCon rname) cname
+addConstraint con rname = Map.adjust (Map.adjust addCon rname)    
     where addCon (RegData t cs ss) = RegData t (con:cs) ss
+
+
+-- students
 
 allStudents :: Courses -> [Student]
 allStudents = nub . concat . outerFold
@@ -64,6 +76,8 @@ testConstraint :: Constraint -> [RegName] -> Bool
 testConstraint (RequireOneOf rs) = not . null . intersect rs
 testConstraint (Forbid r) = notElem r
 
+-- I/O
+
 main :: IO ()
 main = do
     let db = testdb -- TODO: load db
@@ -77,38 +91,45 @@ loop = do
     line <- liftIO getLine
     let (cmd,args) = break isSpace line
     case cmd of
-        "quit" -> liftIO exitSuccess -- TODO: save db
+        "courses" -> do
+            cnames <- liftM courseNames get
+            liftIO $ mapM_ putStrLn cnames
+        "addCourse" -> case maybeRead args of
+            Nothing -> liftIO $ putStrLn "invalid input"
+            Just (cname,_) -> modify (addCourse cname)
+        "removeCourse" -> case maybeRead args of
+            Nothing -> liftIO $ putStrLn "invalid input"
+            Just (cname,_) -> modify (removeCourse cname)        
+
+        "regs" -> case maybeRead args of
+            Nothing -> liftIO $ putStrLn "invalid input"
+            Just (cname,_) -> do
+                rnames <- liftM (regNames cname) get
+                liftIO $ mapM_ putStrLn rnames
+        "addReg" -> case parse_rname_tspan_cname args of
+            Nothing -> liftIO $ putStrLn "invalid input"
+            Just (rname,tspan,cname) -> modify (addReg rname tspan cname)
+        "removeReg" -> case parse_rname_cname args of
+            Nothing -> liftIO $ putStrLn "invalid input"
+            Just (rname,cname) -> modify (removeReg rname cname)
+
+        "addCon" -> case parse_con_rname_cname args of
+            Nothing -> liftIO $ putStrLn "invalid input"
+            Just (con,rname,cname) -> modify (addConstraint con rname cname)
+
         "students" -> do
             students <- liftM allStudents get
             liftIO $ mapM_ putStrLn students
-        "addCourse" -> case maybeRead args of
-            Nothing -> liftIO $ putStrLn "invalid input"
-            Just (cname,_) -> addCourse cname
-        "removeCourse" -> case maybeRead args of
-            Nothing -> liftIO $ putStrLn "invalid input"
-            Just (cname,_) -> removeCourse cname
-        "courses" -> do
-            courses <- liftM Map.keys get
-            liftIO $ mapM_ putStrLn courses
-        "addRegistration" -> case parse_rname_tspan_cname args of
-            Nothing -> liftIO $ putStrLn "invalid input"
-            Just (rname,tspan,cname) -> addRegistration rname tspan cname
-        "registrations" -> case maybeRead args of
-            Nothing -> liftIO $ putStrLn "invalid input"
-            Just (cname,_) -> do
-                courses <- get
-                let regs = Map.lookup cname courses
-                case regs of
-                    Nothing -> liftIO $ putStrLn "course not found"
-                    Just reg -> liftIO $ mapM_ putStrLn $ Map.keys reg
         "studentRegs" -> case maybeRead args of
             Nothing -> liftIO $ putStrLn "invalid input"
             Just (student,_) -> do
                 regs <- liftM (studentRegs student) get
-                liftIO $ print regs
+                liftIO $ print regs                
+
         "debug" -> do
             state <- get
             liftIO $ print state
+        "quit" -> liftIO exitSuccess -- TODO: save db
         otherwise -> return ()
 
 maybeRead :: Read a => String -> Maybe (a,String)
@@ -120,4 +141,18 @@ parse_rname_tspan_cname args = do
     (tspan,arg3) <- maybeRead arg2
     (cname,_)    <- maybeRead arg3
     return (rname,tspan,cname)
+
+parse_rname_cname :: String -> Maybe (RegName, CourseName)
+parse_rname_cname args = do
+    (rname,arg2) <- maybeRead args
+    (cname,_)    <- maybeRead arg2
+    return (rname,cname)
+
+parse_con_rname_cname :: String -> Maybe (Constraint, RegName, CourseName)
+parse_con_rname_cname args = do
+    (con,arg2)   <- maybeRead args
+    (rname,arg3) <- maybeRead arg2
+    (cname,_)    <- maybeRead arg3
+    return (con,rname,cname)
+
 
