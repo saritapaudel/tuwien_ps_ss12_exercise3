@@ -47,6 +47,10 @@ allStudents = nub . concat . outerFold
                   innerFold = flip $ Map.foldr concatStudents
                   concatStudents = (:) . students
 
+studentRegs :: Student -> Courses -> [(CourseName,[RegName])]
+studentRegs s cs = Map.assocs $ Map.filter (not . null) $ 
+                   Map.map (Map.keys . Map.filter (elem s . students)) cs
+
 isRegistered :: Student -> RegName -> CourseName -> Courses -> Bool
 isRegistered s rname cname cs = fromMaybe False $ do
     regs <- Map.lookup cname cs
@@ -86,13 +90,9 @@ loop = do
         "courses" -> do
             courses <- liftM Map.keys get
             liftIO $ mapM_ putStrLn courses
-        "addRegistration" -> case maybeRead args of
+        "addRegistration" -> case parse_rname_tspan_cname args of
             Nothing -> liftIO $ putStrLn "invalid input"
-            Just (rname,arg2) -> case maybeRead arg2 of
-                Nothing -> liftIO $ putStrLn "invalid input"                
-                Just (tspan,arg3) -> case maybeRead arg3 of
-                    Nothing -> liftIO $ putStrLn "invalid input"
-                    Just (cname,_) -> addRegistration rname tspan cname
+            Just (rname,tspan,cname) -> addRegistration rname tspan cname
         "registrations" -> case maybeRead args of
             Nothing -> liftIO $ putStrLn "invalid input"
             Just (cname,_) -> do
@@ -101,10 +101,23 @@ loop = do
                 case regs of
                     Nothing -> liftIO $ putStrLn "course not found"
                     Just reg -> liftIO $ mapM_ putStrLn $ Map.keys reg
+        "studentRegs" -> case maybeRead args of
+            Nothing -> liftIO $ putStrLn "invalid input"
+            Just (student,_) -> do
+                regs <- liftM (studentRegs student) get
+                liftIO $ print regs
         "debug" -> do
             state <- get
-            liftIO $ putStrLn $ show state
+            liftIO $ print state
         otherwise -> return ()
 
 maybeRead :: Read a => String -> Maybe (a,String)
 maybeRead = listToMaybe . reads
+
+parse_rname_tspan_cname :: String -> Maybe (RegName, Timespan, CourseName)
+parse_rname_tspan_cname args = do
+    (rname,arg2) <- maybeRead args
+    (tspan,arg3) <- maybeRead arg2
+    (cname,_)    <- maybeRead arg3
+    return (rname,tspan,cname)
+
