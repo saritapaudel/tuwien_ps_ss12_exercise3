@@ -169,7 +169,15 @@ data Cmd = ShowCourses
          | RegisterStudent CourseName RegName Student
          | Quit
          | Debug
+         | Help
          deriving (Read,Show)
+
+-- TODO: complete
+helpString = 
+    "Available commands:\n\
+    \  ShowCourses\n\
+    \  AddCourse \"<course name>\"\n\
+    \  Help"
 
 main = do let db = testdb  -- TODO: load db
           runStateT (runErrorT loop) db
@@ -184,18 +192,27 @@ parse = do liftIO $ putStr "> "
            liftIO $ hFlush stdout
            line <- liftIO getLine            
            case maybeRead line of
-              Nothing -> throwError ("invalid input")
+              Nothing -> throwError "invalid input (try Help)"
               Just (cmd,_) -> return cmd
 
+assert :: (MonadError e m) => Bool -> e -> m ()
+assert b e = unless b (throwError e)
+
 eval :: Cmd -> ErrorT String (StateT Courses IO) ()
-eval (ShowCourses)         = do cnames <- liftM courseNames get
+
+eval (ShowCourses)         = do cnames <- gets courseNames
                                 liftIO $ mapM_ putStrLn cnames
+
 eval (AddCourse cname)     = do modify (addCourse cname)
-eval (RemoveCourse cname)  = do courses <- get
-                                if Map.member cname courses
-                                    then modify (removeCourse cname)
-                                    else throwError ("unknown course: " ++ cname)
---eval (ShowRegs CourseName)
+
+eval (RemoveCourse cname)  = do isCourse <- gets (Map.member cname)
+                                assert isCourse ("unknown course: " ++ cname)
+                                modify (removeCourse cname)
+
+eval (ShowRegs cname)      = do isCourse <- gets (Map.member cname)
+                                assert isCourse ("unknown course: " ++ cname)
+                                rnames <- gets (regNames cname)
+                                liftIO $ mapM_ putStrLn rnames
 --eval (AddReg CourseName RegName Timespan)
 --eval (RemoveReg CourseName RegName)
 --eval (AddCon CourseName RegName Constraint)
@@ -205,4 +222,5 @@ eval (RemoveCourse cname)  = do courses <- get
 eval (Quit) = do liftIO exitSuccess -- TODO: save db
 eval (Debug) = do state <- get
                   liftIO $ print state
+eval (Help) = do liftIO $ putStrLn helpString
 
