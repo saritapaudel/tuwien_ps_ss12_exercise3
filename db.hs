@@ -50,6 +50,12 @@ addConstraint :: Constraint -> RegName -> CourseName -> Courses -> Courses
 addConstraint con rname = Map.adjust (Map.adjust addCon rname)    
     where addCon (RegData t cs ss) = RegData t (con:cs) ss
 
+violatedConstraints :: [Constraint] -> [RegName] -> [Constraint]
+violatedConstraints cs rs = filter (\c -> not $ testConstraint c rs) cs
+
+testConstraint :: Constraint -> [RegName] -> Bool
+testConstraint (RequireOneOf rs) = not . null . intersect rs
+testConstraint (Forbid r) = notElem r
 
 -- students
 
@@ -69,12 +75,15 @@ isRegistered s rname cname cs = fromMaybe False $ do
     reg <- Map.lookup rname regs
     return (s `elem` students reg)
 
-violatedConstraints :: [Constraint] -> [RegName] -> [Constraint]
-violatedConstraints cs rs = filter (\c -> not $ testConstraint c rs) cs
-
-testConstraint :: Constraint -> [RegName] -> Bool
-testConstraint (RequireOneOf rs) = not . null . intersect rs
-testConstraint (Forbid r) = notElem r
+registerStudent :: Student -> RegName -> CourseName -> Courses -> Either [Constraint] Courses
+registerStudent s rname cname cs = 
+    if null vcons then Right (registerStudent' s) else Left vcons
+    where vcons = violatedConstraints (constraints reg) otherRegsOfStudent
+          reg = fromMaybe (RegData undefined [] []) $ Map.lookup rname regs
+          otherRegsOfStudent = Map.keys $ Map.filter (\x -> s `elem` students x) regs
+          regs = fromMaybe Map.empty $ Map.lookup cname cs
+          registerStudent' s = Map.adjust (Map.adjust addStud rname) cname cs
+          addStud (RegData t cs ss) = RegData t cs (s:ss)
 
 -- I/O
 
@@ -86,6 +95,7 @@ main = do
 
 loop :: StateT Courses IO ()
 loop = do
+    liftIO $ hSetBuffering stdin LineBuffering -- for GHCi
     liftIO $ putStr "> "
     liftIO $ hFlush stdout
     line <- liftIO getLine
@@ -124,12 +134,23 @@ loop = do
             Nothing -> liftIO $ putStrLn "invalid input"
             Just (student,_) -> do
                 regs <- liftM (studentRegs student) get
-                liftIO $ print regs                
+                liftIO $ print regs
+        "registerStudent" -> case parse_stud_rname_cname args of
+            Nothing -> liftIO $ putStrLn "invalid input"
+            Just (stud,rname,cname) -> do
+                db <- get
+                case registerStudent stud rname cname db of
+                    Left vcons -> do
+                        liftIO $ putStrLn "error: violates constraints:"
+                        liftIO $ mapM_ print vcons
+                    Right db' -> put db'
 
         "debug" -> do
             state <- get
             liftIO $ print state
-        "quit" -> liftIO exitSuccess -- TODO: save db
+        "quit" -> do
+            liftIO $ hSetBuffering stdin NoBuffering -- for GHCi
+            liftIO exitSuccess -- TODO: save db
         otherwise -> return ()
 
 maybeRead :: Read a => String -> Maybe (a,String)
@@ -155,4 +176,9 @@ parse_con_rname_cname args = do
     (cname,_)    <- maybeRead arg3
     return (con,rname,cname)
 
-
+parse_stud_rname_cname :: String -> Maybe (Student, RegName, CourseName)
+parse_stud_rname_cname args = do
+    (stud,arg2)  <- maybeRead args
+    (rname,arg3) <- maybeRead arg2
+    (cname,_)    <- maybeRead arg3
+    return (stud,rname,cname)
