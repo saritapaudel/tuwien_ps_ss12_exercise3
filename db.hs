@@ -104,12 +104,15 @@ loop = do
         "courses" -> do
             cnames <- liftM courseNames get
             liftIO $ mapM_ putStrLn cnames
-        "addCourse" -> case maybeRead args of
-            Nothing -> liftIO $ putStrLn "invalid input"
-            Just (cname,_) -> modify (addCourse cname)
-        "removeCourse" -> case maybeRead args of
-            Nothing -> liftIO $ putStrLn "invalid input"
-            Just (cname,_) -> modify (removeCourse cname)        
+        "addCourse" -> do
+            case parse (pString "course name") args of
+                Left msg -> liftIO $ putStrLn msg
+                Right (cname,_) -> modify (addCourse cname)
+        "removeCourse" -> do
+            courses <- get
+            case parse (pCourse courses) args of
+                Left msg -> liftIO $ putStrLn msg
+                Right (cname,_) -> modify (removeCourse cname)
 
         "regs" -> case maybeRead args of
             Nothing -> liftIO $ putStrLn "invalid input"
@@ -182,3 +185,25 @@ parse_stud_rname_cname args = do
     (rname,arg3) <- maybeRead arg2
     (cname,_)    <- maybeRead arg3
     return (stud,rname,cname)
+
+
+pString :: String -> Parser String
+pString name = Parser $ \s -> case maybeRead s of
+                                 Nothing -> Left ("error parsing " ++ name)
+                                 Just (str,rest) -> Right (str,rest)
+
+pCourse :: Courses -> Parser CourseName
+pCourse cs = do
+    cname <- pString "course name"
+    if Map.member cname cs
+        then return cname
+        else fail ("unknown course: " ++ cname)
+
+newtype Parser a = Parser { parse :: String -> Either String (a,String) }
+
+instance Monad Parser where
+    return a = Parser $ \cs -> Right (a,cs)
+    fail msg = Parser $ \cs -> Left msg
+    p >>= f = Parser $ \cs -> case parse p cs of
+                                 Left msg -> Left msg
+                                 Right (a,cs') -> parse (f a) cs'
