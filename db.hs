@@ -11,6 +11,7 @@ import Data.Char
 import Control.Monad.Error
 import Data.Functor
 import Data.Time
+import System.Console.Haskeline
 
 type DB = Map CourseName (Map RegName RegData)
 data RegData = RegData { timespan :: Timespan
@@ -26,21 +27,11 @@ data Constraint = Require RegName
                 deriving (Read,Show,Eq)
 type Student = String
 
--- courses
-
-courseNames :: DB -> [CourseName]
-courseNames = Map.keys
-
 addCourse :: CourseName -> DB -> DB
 addCourse = flip Map.insert Map.empty
 
 removeCourse :: CourseName -> DB -> DB
 removeCourse = Map.delete
-
--- registrations
-
-regNames :: CourseName -> DB -> [RegName]
-regNames c = Map.keys . fromMaybe Map.empty . Map.lookup c
 
 addReg :: RegName -> Timespan -> CourseName -> DB -> DB
 addReg r t = Map.adjust (Map.insert r (RegData t [] []))
@@ -50,8 +41,6 @@ removeReg r = Map.adjust (Map.delete r)
 
 getReg :: RegName -> CourseName -> DB -> Maybe RegData
 getReg r c db = Map.lookup c db >>= Map.lookup r
-
--- constraints
 
 getConstraints :: RegName -> CourseName -> DB -> [Constraint]
 getConstraints r c db = fromMaybe [] $ constraints <$> getReg r c db
@@ -72,8 +61,6 @@ testConstraint (Forbid r)        = notElem r
 -- the resulting list contains all violated constraints
 applyConstraints :: [RegName] -> [Constraint] -> [Constraint]
 applyConstraints rs = filter (not . flip testConstraint rs)
-
--- students
 
 getStudents :: RegName -> CourseName -> DB -> [Student]
 getStudents r c db = fromMaybe [] $ students <$> getReg r c db
@@ -102,35 +89,53 @@ removeStudent :: Student -> RegName -> CourseName -> DB -> DB
 removeStudent s r = Map.adjust (Map.adjust removeStud r)
     where removeStud (RegData t cs ss) = RegData t cs (delete s ss)
 
--- Main loop
+------------------------------------------------------------------------------
+
+data Cmd = ListCourses 
+         | AddCourse CourseName 
+         | RemoveCourse CourseName
+         | AddReg CourseName RegName Timespan
+         | RemoveReg CourseName RegName 
+         | ListCons CourseName RegName
+         | AddCon CourseName RegName Constraint
+         | RemoveCon CourseName RegName Constraint
+         | AllStudents
+         | ListStudents CourseName RegName
+         | ListStudentRegs Student 
+         | IsRegistered Student CourseName RegName
+         | Register Student CourseName RegName
+         | Unregister Student CourseName RegName
+         | Help
+         | Quit
+         | Dump
+         deriving (Read,Show)
 
 main = do db <- loadDB
-          runStateT (runErrorT loop) db
+          putStrLn "for a list of commands, type Help"
+          runInputT defaultSettings $ runStateT (runErrorT loop) db
 
-loop :: ErrorT String (StateT DB IO) ()
+loop :: ErrorT String (StateT DB (InputT IO)) ()
 loop = (parse >>= eval) `catchError` (liftIO . putStrLn) >> loop
 
-parse :: ErrorT String (StateT DB IO) Cmd
-parse = do liftIO $ putStr "> "
-           liftIO $ hFlush stdout
-           line <- liftIO getLine            
-           case (listToMaybe . reads) line of
+parse :: ErrorT String (StateT DB (InputT IO)) Cmd
+parse = do line <- lift $ lift $ getInputLine "> "
+           case (listToMaybe . reads . fromMaybe "") line of
               Nothing -> throwError "invalid input (try Help)"
               Just (cmd,_) -> return cmd
 
-eval :: Cmd -> ErrorT String (StateT DB IO) ()
+eval :: Cmd -> ErrorT String (StateT DB (InputT IO)) ()
 
 eval (ListCourses) = do 
     crs <- gets (Map.assocs . Map.map Map.assocs)
     liftIO $ forM_ crs $ \(c,rs) -> do
         putStrLn ("\n" ++ c ++ ":")
-        forM_ rs $ \(r,(RegData t cs ss)) -> do
+        forM_ rs $ \(r, RegData t cs ss) -> do
             putStr ("  " ++ r)
             putStr (' ':show t)            
             putStr (" [" ++ show (length ss) ++ " registered]")
             case length cs of
                 0 -> putChar '\n'
-                1 -> putStrLn (" [1 constraint]")
+                1 -> putStrLn " [1 constraint]"
                 n -> putStrLn (" [" ++ show n ++ " constraints]")
 
 eval (AddCourse c) = modify (addCourse c)
@@ -153,7 +158,7 @@ eval (AddCon c r con) = do assertCourseAndReg c r
 
 eval (RemoveCon c r con) = do
     assertCourseAndReg c r
-    cons <- gets (constraints . fromJust . Map.lookup r . fromJust . Map.lookup c)
+    cons <- gets (getConstraints r c)
     assert (not . null $ cons) "unknown constraint"
     modify (removeConstraint con r c)
 
@@ -176,8 +181,8 @@ eval (Register s c r) = do
     let vcons = applyConstraints regs cons
     if null vcons then modify (addStudent s r c)
                   else liftIO $ do 
-                    putStrLn "could not register. violated constraints:"
-                    forM_ vcons $ \vc -> putStrLn ("\t" ++ show vc)
+                    putStrLn "could not register because of the following constraints:"
+                    forM_ vcons $ \vc -> putStrLn ("  " ++ show vc)
 
 eval (Unregister s c r) = do assertCourseAndReg c r
                              modify (removeStudent s r c)
@@ -217,45 +222,23 @@ eval (Help) = liftIO $ putStrLn "Available commands:\n\
     \  IsRegistered \"<student>\" \"<course>\" \"<reg>\"\n\
     \  Register \"<student>\" \"<course>\" \"<reg>\"\n\
     \  Unregister \"<student>\" \"<course>\" \"<reg>\"\n\
+    \  \n\
     \  Help\n\
     \  Quit"
-
-data Cmd = ListCourses 
-         | AddCourse CourseName 
-         | RemoveCourse CourseName
-         | AddReg CourseName RegName Timespan
-         | RemoveReg CourseName RegName 
-         | ListCons CourseName RegName
-         | AddCon CourseName RegName Constraint
-         | RemoveCon CourseName RegName Constraint
-         | AllStudents
-         | ListStudents CourseName RegName
-         | ListStudentRegs Student 
-         | IsRegistered Student CourseName RegName
-         | Register Student CourseName RegName
-         | Unregister Student CourseName RegName
-         | Help
-         | Quit
-         | Dump
-         deriving (Read,Show)
-
--- Assertion helper functions
 
 assert :: (MonadError e m) => Bool -> e -> m ()
 assert b e = unless b (throwError e)
 
-assertCourse :: CourseName -> ErrorT String (StateT DB IO) ()
+assertCourse :: Monad m => CourseName -> ErrorT String (StateT DB m) ()
 assertCourse c = do isCourse <- gets (Map.member c)
                     assert isCourse ("unknown course: " ++ c)
 
-assertCourseAndReg :: CourseName -> RegName -> ErrorT String (StateT DB IO) ()
+assertCourseAndReg :: Monad m => CourseName -> RegName -> ErrorT String (StateT DB m) ()
 assertCourseAndReg c r = do regs <- gets (Map.lookup c)
                             case regs of
                                 Nothing -> throwError ("unknown course: " ++ c)
                                 Just rs -> assert (Map.member r rs) 
                                                   ("unknown registration: " ++ r)
-
--- File I/O
 
 dbFilePath :: IO FilePath
 dbFilePath = do args <- getArgs
