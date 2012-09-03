@@ -4,20 +4,23 @@ import qualified Data.Map as Map
 import Data.Maybe
 import Control.Monad.State
 import System.IO
+import System.Directory
 import System.Exit
+import System.Environment
 import Data.Char
 import Control.Monad.Error
+import Data.Functor
 
 type DB = Map CourseName (Map RegName RegData)
 data RegData = RegData { timespan :: Timespan
                        , constraints :: [Constraint]
                        , students :: [Student]
-                       } deriving (Show)
+                       } deriving (Read,Show)
 type CourseName = String
 type RegName = String
-type Timespan = (Int,Int) -- (UTCTime,UTCTime)
+type Timespan = (Int,Int) -- (UTCTime,UTCTime) TODO
 data Constraint = RequireOneOf [RegName] 
-                | Forbid RegName deriving (Read,Show)
+                | Forbid RegName deriving (Read,Show,Eq)
 type Student = String
 
 testdb :: DB
@@ -45,16 +48,21 @@ addReg r t = Map.adjust (Map.insert r (RegData t [] []))
 removeReg :: RegName -> CourseName -> DB -> DB
 removeReg r = Map.adjust (Map.delete r)
 
+getReg :: RegName -> CourseName -> DB -> Maybe RegData
+getReg r c db = Map.lookup c db >>= Map.lookup r
+
 -- constraints
 
 getConstraints :: RegName -> CourseName -> DB -> [Constraint]
-getConstraints r c db =  fromMaybe [] $ do regs <- Map.lookup c db
-                                           reg <- Map.lookup r regs
-                                           return (constraints reg)
+getConstraints r c db = fromMaybe [] $ constraints <$> getReg r c db
 
 addConstraint :: Constraint -> RegName -> CourseName -> DB -> DB
 addConstraint c r = Map.adjust (Map.adjust addCon r)    
     where addCon (RegData t cs ss) = RegData t (c:cs) ss
+
+removeConstraint :: Constraint -> RegName -> CourseName -> DB -> DB
+removeConstraint c r = Map.adjust (Map.adjust removeCon r)
+    where removeCon (RegData t cs ss) = RegData t (delete c cs) ss
 
 testConstraint :: Constraint -> [RegName] -> Bool
 testConstraint (RequireOneOf rs) = not . null . intersect rs
@@ -86,35 +94,82 @@ addStudent :: Student -> RegName -> CourseName -> DB -> DB
 addStudent s r = Map.adjust (Map.adjust addStud r)
     where addStud (RegData t cs ss) = RegData t cs (s:ss)
 
+removeStudent :: Student -> RegName -> CourseName -> DB -> DB
+removeStudent s r = Map.adjust (Map.adjust removeStud r)
+    where removeStud (RegData t cs ss) = RegData t cs (delete s ss)
+
 -- I/O
 
+-- TODO: comment as much as possible (make it literate?)
 
-
--- TODO: check if we haven't missed anything
-data Cmd = ShowCourses 
+data Cmd = ListCourses 
          | AddCourse CourseName 
          | RemoveCourse CourseName
-         | ShowRegs CourseName 
+         | ListRegs CourseName 
+         | ShowReg CourseName RegName
          | AddReg CourseName RegName Timespan
          | RemoveReg CourseName RegName 
          | AddCon CourseName RegName Constraint
-         | ShowStudents 
-         | ShowStudentRegs Student 
-         | RegisterStudent CourseName RegName Student
+         | RemoveCon CourseName RegName Constraint
+         | ListStudents 
+         | ListStudentRegs Student 
+         | IsRegistered Student CourseName RegName
+         | RegisterStudent Student CourseName RegName
+         | UnregisterStudent Student CourseName RegName
+         | Help
          | Quit
          | Debug
-         | Help
          deriving (Read,Show)
 
--- TODO: complete
 helpString = 
     "Available commands:\n\
-    \  ShowCourses\n\
-    \  AddCourse \"<course name>\"\n\
-    \  Help"
+    \  \n\
+    \  ListCourses\n\
+    \  AddCourse \"<course>\"\n\
+    \  RemoveCourse \"<course>\"\n\
+    \  \n\
+    \  ListRegs \"<course>\"\n\
+    \  ShowReg \"<course>\" \"<reg>\"\n\
+    \  AddReg \"<course>\" \"<reg>\" (<begin>,<end>)\n\
+    \        where <begin> and <end> are of the form \"yyyy-mm-dd hh:mm:ss\"\n\
+    \  RemoveReg \"<course>\" \"<reg>\"\n\
+    \  \n\
+    \  AddCon \"<course>\" \"<reg>\" <constraint>\n\
+    \  RemoveCon \"<course>\" \"<reg>\" <constraint>\n\
+    \      where <constraint> is one of the following:\n\
+    \          RequireOneOf [\"<reg1>\",\"<reg2>\",...]\n\
+    \          Forbid \"<reg>\"\n\
+    \  \n\
+    \  ListStudents\n\
+    \  ListStudentRegs \"<student>\"\n\
+    \  IsRegistered \"<student>\" \"<course>\" \"<reg>\"\n\
+    \  Register \"<student>\" \"<course>\" \"<reg>\"\n\
+    \  Unregister \"<student>\" \"<course>\" \"<reg>\"\n\
+    \  Help\n\
+    \  Quit"
 
-main = do let db = testdb  -- TODO: load db
+dbFilePath :: IO FilePath
+dbFilePath = do args <- getArgs
+                if null args then return "db.data"
+                else return (head args)
+
+loadDB :: IO DB
+loadDB = do path <- dbFilePath
+            e <- doesFileExist path
+            if e then read <$> readFile path
+                 else return Map.empty
+
+saveDB :: DB -> IO ()
+saveDB db = do path <- dbFilePath
+               let s = show db
+               writeFile path s
+
+main = do db <- loadDB
           runStateT (runErrorT loop) db
+
+
+newtype App a = App { runApp :: ErrorT String (StateT DB IO) a }
+
 
 loop :: ErrorT String (StateT DB IO) ()
 loop = (parse >>= eval >> loop) `catchError` handler
@@ -147,34 +202,47 @@ assertCourseAndReg c r = do regs <- gets (Map.lookup c)
                                                   ("unknown registration: " ++ r)
 
 eval :: Cmd -> ErrorT String (StateT DB IO) ()
-eval (ShowCourses)         = do cs <- gets courseNames
-                                liftIO $ mapM_ putStrLn cs
 
-eval (AddCourse c)         = do modify (addCourse c)
+eval (ListCourses) = do cs <- gets courseNames
+                        liftIO $ mapM_ putStrLn cs
 
-eval (RemoveCourse c)      = do assertCourse c 
-                                modify (removeCourse c)
+eval (AddCourse c) = modify (addCourse c)
 
-eval (ShowRegs c)          = do assertCourse c
-                                rs <- gets (regNames c)
-                                liftIO $ mapM_ putStrLn rs
+eval (RemoveCourse c) = do assertCourse c
+                           modify (removeCourse c)
 
-eval (AddReg c r t)        = do assertCourseAndReg c r
-                                modify (addReg r t c)
+eval (ListRegs c) = do assertCourse c
+                       rs <- gets (regNames c)
+                       liftIO $ mapM_ putStrLn rs
 
-eval (RemoveReg c r)       = do assertCourse c
-                                modify (removeReg r c)
+eval (ShowReg c r) = do assertCourseAndReg c r
+                        Just (RegData t cs ss) <- gets (getReg r c)
+                        liftIO $ do putStrLn $ "Timespan: " ++ show t
+                                    putStrLn $ "Constraints: " ++ show cs
+                                    putStrLn $ "Registered Students: " ++ show ss
 
-eval (AddCon c r con)      = do assertCourseAndReg c r
-                                modify (addConstraint con r c)
+eval (AddReg c r t) = do assertCourse c
+                         modify (addReg r t c)
 
-eval (ShowStudents)        = do ss <- gets allStudents
-                                liftIO $ mapM_ putStrLn ss
+eval (RemoveReg c r) = do assertCourse c
+                          modify (removeReg r c)
 
-eval (ShowStudentRegs s)   = do rs <- gets (studentRegs s)
-                                liftIO $ print rs
+eval (AddCon c r con) = do assertCourseAndReg c r
+                           modify (addConstraint con r c)
 
-eval (RegisterStudent c r s) = do 
+eval (RemoveCon c r con) = do
+    assertCourseAndReg c r
+    cons <- gets (constraints . fromJust . Map.lookup r . fromJust . Map.lookup c)
+    assert (not . null $ cons) "unknown constraint"
+    modify (removeConstraint con r c)
+
+eval (ListStudents) = do ss <- gets allStudents
+                         liftIO $ mapM_ putStrLn ss
+
+eval (ListStudentRegs s) = do rs <- gets (studentRegs s)
+                              liftIO $ print rs
+
+eval (RegisterStudent s c r) = do 
     assertCourseAndReg c r
     regs <- gets (fromMaybe [] . lookup c . studentRegs s)
     cons <- gets (getConstraints r c)
@@ -183,8 +251,21 @@ eval (RegisterStudent c r s) = do
                   else do liftIO $ putStrLn "violated constraints:"
                           liftIO $ print vcons
 
-eval (Quit)                = do liftIO exitSuccess -- TODO: save db
-eval (Debug)               = do state <- get
-                                liftIO $ print state
-eval (Help)                = do liftIO $ putStrLn helpString
+eval (UnregisterStudent s c r) = do 
+    assertCourseAndReg c r
+    isReg <- gets (isRegistered s r c)
+    assert isReg (s ++ " is not registered for " ++ c ++ " " ++ r)
+    modify (removeStudent s r c)
 
+eval (IsRegistered s c r) = do assertCourseAndReg c r
+                               isReg <- gets (isRegistered s r c)
+                               liftIO $ print isReg
+
+eval (Quit) = do db <- get
+                 liftIO $ saveDB db
+                 liftIO exitSuccess
+
+eval (Help) = liftIO $ putStrLn helpString
+
+eval (Debug) = do db <- get
+                  liftIO $ print db
